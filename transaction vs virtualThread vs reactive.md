@@ -816,3 +816,161 @@ Given your existing **JPA** service and the desire to parallelize/isolate:
 ***
 
 If you tell me which steps you want to run in parallel (e.g., Riders + Medicare + Existing + Beneficiaries + Documents + KYC), I can sketch the exact `Mono.zip` graph for your entities and show where to put sub-transactions vs a single transaction.
+
+
+@Service
+public class DocumentService {
+
+    private final FileStorageService fileStorageService;
+
+    public DocumentService(FileStorageService fileStorageService) {
+        this.fileStorageService = fileStorageService;
+    }
+
+    public boolean isDocumentReceived(String applicationId, String documentId, MultipartFile file) {
+        saveDocument(applicationId, documentId, file);
+        return true;
+    }
+
+    @Async
+    public void saveDocument(String applicationId, String documentId, MultipartFile file) {
+        try {
+            fileStorageService.uploadFileToBlobStorage(applicationId, documentId, file.getInputStream(), file.getSize());
+        } catch (Exception ex) {
+            throw new FileStorageException();
+        }
+    }
+}
+Call async methods via an injected dependency instead of directly via 'this'.
+
+
+You're getting the warning **“Call async methods via an injected dependency instead of directly via `this`”** because **Spring @Async only works when the method is invoked through a Spring proxy**, not direct self-invocation.
+
+Right now your code does this:
+
+```java
+saveDocument(applicationId, documentId, file);  // ❌ direct call
+```
+
+Calling the method on `this` bypasses Spring’s AOP proxy — so **async will NOT execute asynchronously**.
+
+***
+
+# ✅ Correct Fix: Inject the same service into itself
+
+Spring recommends calling `@Async` methods **through a proxy**, which can be done by injecting the same bean back into itself.
+
+### Step 1: Add a self-reference
+
+```java
+@Service
+public class DocumentService {
+
+    private final FileStorageService fileStorageService;
+
+    // Self-injection
+    private final DocumentService self;
+
+    public DocumentService(FileStorageService fileStorageService, DocumentService self) {
+        this.fileStorageService = fileStorageService;
+        this.self = self;
+    }
+
+    public boolean isDocumentReceived(String applicationId, String documentId, MultipartFile file) {
+        // Call async method via proxy
+        self.saveDocument(applicationId, documentId, file);
+        return true;
+    }
+
+    @Async
+    public void saveDocument(String applicationId, String documentId, MultipartFile file) {
+        try {
+            fileStorageService.uploadFileToBlobStorage(
+                applicationId,
+                documentId,
+                file.getInputStream(),
+                file.getSize()
+            );
+        } catch (Exception ex) {
+            throw new FileStorageException();
+        }
+    }
+}
+```
+
+***
+
+# ⚠️ Why this works
+
+*   `DocumentService self` is the **Spring proxy** that contains the `@Async` interceptor.
+*   Calling `self.saveDocument()` goes through the proxy → async works.
+*   Calling `this.saveDocument()` or just `saveDocument()` bypasses proxy → async does **NOT** work.
+
+***
+
+# 🔥 Alternative (cleaner) solution: Move async logic to another bean
+
+### Async class
+
+```java
+@Service
+public class AsyncDocumentSaver {
+
+    private final FileStorageService fileStorageService;
+
+    public AsyncDocumentSaver(FileStorageService fileStorageService) {
+        this.fileStorageService = fileStorageService;
+    }
+
+    @Async
+    public void saveDocument(String applicationId, String documentId, MultipartFile file) {
+        try {
+            fileStorageService.uploadFileToBlobStorage(
+                applicationId,
+                documentId,
+                file.getInputStream(),
+                file.getSize()
+            );
+        } catch (Exception ex) {
+            throw new FileStorageException();
+        }
+    }
+}
+```
+
+### Main service
+
+```java
+@Service
+public class DocumentService {
+
+    private final AsyncDocumentSaver asyncSaver;
+
+    public DocumentService(AsyncDocumentSaver asyncSaver) {
+        this.asyncSaver = asyncSaver;
+    }
+
+    public boolean isDocumentReceived(String applicationId, String documentId, MultipartFile file) {
+        asyncSaver.saveDocument(applicationId, documentId, file);
+        return true;
+    }
+}
+```
+
+This is the **cleanest**, most maintainable way.
+
+***
+
+# 🧠 Summary
+
+| Approach                          | Works? | Comment                             |
+| --------------------------------- | ------ | ----------------------------------- |
+| Calling `this.saveDocument()`     | ❌      | Bypasses proxy, async won't trigger |
+| Calling `saveDocument()` directly | ❌      | Still self-invocation               |
+| Injecting `DocumentService self`  | ✅      | Async works through proxy           |
+| Using a separate async bean       | ✅      | Best practice                       |
+
+***
+
+If you want, I can also help you add **retry logic**, **exception logging**, or **return `CompletableFuture`** for result tracking.
+
