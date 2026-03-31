@@ -1,0 +1,158 @@
+pls explain me in short what is Spring proxy, and what is direct self-invocation.
+
+Sure — here’s a **short, plain‑English explanation** with a tiny example.
+
+***
+
+## ✅ What is a **Spring Proxy**?
+
+A **Spring proxy** is a **wrapper object** that Spring creates around your bean to add extra behavior like:
+
+*   `@Async`
+*   `@Transactional`
+*   `@Cacheable`
+*   `@Retryable`
+*   `@Secured`
+
+👉 Your code does **not** talk to the real object directly.  
+👉 It talks to the **proxy**, and the proxy decides **what extra logic to run before/after** calling the real method.
+
+### Simple idea
+
+    Your code → Spring Proxy → Your real method
+
+Example:
+
+```java
+@Async
+public void save() { }
+```
+
+Spring creates a proxy so it can say:
+
+> “Run this method in another thread.”
+
+***
+
+## ✅ What is **direct self‑invocation**?
+
+**Direct self‑invocation** means:
+
+> A method in a class calls another method **in the same class** using `this` (or implicitly).
+
+Example:
+
+```java
+@Service
+public class DocumentService {
+
+    public void upload() {
+        saveAsync();   // ❌ direct self-invocation
+    }
+
+    @Async
+    public void saveAsync() {
+        // async logic
+    }
+}
+```
+
+### Why this is a problem
+
+*   The call **never goes through the Spring proxy**
+*   Spring **cannot intercept the call**
+*   `@Async` is **ignored**
+*   Method runs **synchronously**
+
+***
+
+## ✅ Why Spring proxies are bypassed in self‑invocation
+
+When you do:
+
+```java
+saveAsync();
+```
+
+It is really:
+
+```java
+this.saveAsync();
+```
+
+That means:
+
+    Real object → Real object
+
+❌ Proxy is skipped  
+❌ No async / transaction / cache logic
+
+***
+
+## ✅ Correct way: call via the proxy
+
+### Option 1: Inject the proxy (self‑injection)
+
+```java
+@Service
+public class DocumentService {
+
+    private final DocumentService self;
+
+    public DocumentService(DocumentService self) {
+        this.self = self;
+    }
+
+    public void upload() {
+        self.saveAsync();   // ✅ goes through proxy
+    }
+
+    @Async
+    public void saveAsync() { }
+}
+```
+
+### Option 2 (BEST PRACTICE): separate class
+
+```java
+@Service
+public class AsyncSaver {
+
+    @Async
+    public void saveAsync() { }
+}
+
+@Service
+public class DocumentService {
+
+    private final AsyncSaver asyncSaver;
+
+    public DocumentService(AsyncSaver asyncSaver) {
+        this.asyncSaver = asyncSaver;
+    }
+
+    public void upload() {
+        asyncSaver.saveAsync();   // ✅ proxy used
+    }
+}
+```
+
+***
+
+## ✅ One‑line summaries (easy to remember)
+
+*   **Spring Proxy**:  
+    👉 A wrapper Spring uses to add features like async, transactions, caching.
+
+*   **Direct self‑invocation**:  
+    👉 A method calling another method in the same class, bypassing the proxy.
+
+***
+
+## ✅ Golden rule
+
+> **Spring features only work when the method call goes through the proxy.**
+
+If you remember just that line, you’ll never get confused again.
+
+If you want, I can also explain this with a **real-life analogy (manager & assistant)** or draw a **flow diagram**.
